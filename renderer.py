@@ -21,13 +21,30 @@ RARITY_COLORS = {
 _FONT_CACHE = {}
 
 
+def _validate_cjk_font(font, test_chars="阿米娅★星"):
+    """验证字体是否支持中文字符"""
+    try:
+        for char in test_chars:
+            bbox = font.getbbox(char)
+            if bbox is None or (bbox[2] - bbox[0]) <= 0:
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def _get_font(font_dir, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     """获取字体"""
+    import logging
+    logger = logging.getLogger(__name__)
+
     key = (font_dir, size, bold)
     if key in _FONT_CACHE:
         return _FONT_CACHE[key]
 
     font = None
+
+    # 1. 尝试插件目录中的字体
     if font_dir:
         font_paths = [
             os.path.join(font_dir, "HarmonyOS_Sans_SC_Bold.ttf" if bold else "HarmonyOS_Sans_SC_Regular.ttf"),
@@ -36,12 +53,22 @@ def _get_font(font_dir, size: int, bold: bool = False) -> ImageFont.FreeTypeFont
         ]
         for fp in font_paths:
             if os.path.exists(fp):
+                file_size = os.path.getsize(fp)
+                logger.info(f"[Font] 尝试加载: {fp} ({file_size} bytes)")
                 try:
-                    font = ImageFont.truetype(fp, size)
-                    break
-                except Exception:
-                    pass
+                    test_font = ImageFont.truetype(fp, size)
+                    if _validate_cjk_font(test_font):
+                        font = test_font
+                        logger.info(f"[Font] 加载成功: {fp}")
+                        break
+                    else:
+                        logger.warning(f"[Font] 字体不支持中文: {fp}")
+                except Exception as e:
+                    logger.warning(f"[Font] 加载失败: {fp} - {e}")
+            else:
+                logger.debug(f"[Font] 文件不存在: {fp}")
 
+    # 2. 尝试系统字体
     if font is None:
         system_fonts = [
             "C:/Windows/Fonts/msyh.ttc",
@@ -49,16 +76,23 @@ def _get_font(font_dir, size: int, bold: bool = False) -> ImageFont.FreeTypeFont
             "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.otf",
             "/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf",
             "/usr/share/fonts/noto-cjk/NotoSansSC-Regular.otf",
+            "/usr/share/fonts/google-noto-cjk/NotoSansSC-Regular.otf",
         ]
         for sf in system_fonts:
             if os.path.exists(sf):
+                logger.info(f"[Font] 尝试系统字体: {sf}")
                 try:
-                    font = ImageFont.truetype(sf, size)
-                    break
-                except Exception:
-                    pass
+                    test_font = ImageFont.truetype(sf, size)
+                    if _validate_cjk_font(test_font):
+                        font = test_font
+                        logger.info(f"[Font] 系统字体成功: {sf}")
+                        break
+                except Exception as e:
+                    logger.warning(f"[Font] 系统字体失败: {sf} - {e}")
 
+    # 3. 最后回退到默认字体
     if font is None:
+        logger.error("[Font] 未找到可用的中文字体，将显示乱码")
         font = ImageFont.load_default()
 
     _FONT_CACHE[key] = font

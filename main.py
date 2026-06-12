@@ -58,6 +58,18 @@ class ArknightsToolboxPlugin(Star):
         # 初始化抽卡数据库
         await self.banner_manager.initialize_db()
 
+        # 诊断字体文件状态
+        font_path = os.path.join(self.font_dir, "NotoSansSC-Regular.ttf")
+        if os.path.exists(font_path):
+            font_size = os.path.getsize(font_path)
+            logger.info(f"[诊断] 字体文件存在: {font_path} ({font_size} bytes)")
+            if font_size < 100000:
+                logger.warning(f"[诊断] 字体文件过小，可能损坏，正在重新下载...")
+                await self.banner_manager.download_font(self.font_dir)
+        else:
+            logger.info(f"[诊断] 字体文件不存在: {font_path}，正在下载...")
+            await self.banner_manager.download_font(self.font_dir)
+
         # 加载干员池（优先本地文件，其次 API 下载）
         async with self._get_db() as db:
             async with db.execute("SELECT COUNT(*) FROM operator_pool") as cursor:
