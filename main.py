@@ -1,7 +1,8 @@
 """
-AstrBot 明日方舟抽卡模拟插件
+AstrBot 明日方舟工具箱插件
 """
 import os
+import re
 import logging
 import tempfile
 from datetime import datetime
@@ -13,13 +14,14 @@ import astrbot.api.message_components as Comp
 
 from .engine import GachaEngine
 from .banner import BannerManager
-from .renderer import GachaRenderer
+from .crafting import MaterialDataLoader
+from .renderer import GachaRenderer, MaterialRenderer
 
 logger = logging.getLogger(__name__)
 
 
-@register("arknights_gacha", "皮皮朱", "明日方舟抽卡模拟器", "1.0.0")
-class ArknightsGachaPlugin(Star):
+@register("arknights_gacha", "皮皮朱", "明日方舟工具箱", "2.0.0")
+class ArknightsToolboxPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
@@ -29,11 +31,15 @@ class ArknightsGachaPlugin(Star):
         self.db_path = os.path.join(self.data_dir, "gacha.db")
         self.font_dir = os.path.join(os.path.dirname(__file__), "resource", "fonts")
 
-        # 初始化组件
+        # 初始化抽卡组件
         source = config.get("data_source", "github")
         self.banner_manager = BannerManager(self.db_path, source)
         self.engine = GachaEngine(self.db_path, config)
-        self.renderer = GachaRenderer(self.font_dir)
+        self.gacha_renderer = GachaRenderer(self.font_dir)
+
+        # 初始化素材组件
+        self.loader = MaterialDataLoader(self.data_dir, source)
+        self.material_renderer = MaterialRenderer(self.font_dir)
 
     def _get_data_dir(self) -> str:
         """获取数据目录"""
@@ -47,25 +53,30 @@ class ArknightsGachaPlugin(Star):
 
     async def initialize(self):
         """插件初始化"""
-        logger.info("方舟抽卡模拟插件初始化中...")
+        logger.info("明日方舟工具箱插件初始化中...")
 
-        # 初始化数据库
+        # 初始化抽卡数据库
         await self.banner_manager.initialize_db()
 
-        # 检查是否需要自动更新卡池
-        # TODO: 实现自动同步
+        # 初始化素材数据库
+        await self.loader.initialize_db()
+        count = await self.loader.get_item_count()
+        if count == 0:
+            logger.info("素材数据库为空，首次使用请执行 /方舟更新数据")
+        else:
+            logger.info(f"素材数据库已有 {count} 个物品")
 
     async def terminate(self):
         """插件终止"""
-        logger.info("方舟抽卡模拟插件已终止")
+        logger.info("明日方舟工具箱插件已终止")
 
-    # ========== 命令: /方舟抽卡 ==========
+    # ========== 抽卡命令 ==========
+
     @filter.command("方舟抽卡")
     async def on_single_pull(self, event: AstrMessageEvent):
         """单抽"""
         user_id = self._get_user_id(event)
 
-        # 检查货币
         async with self._get_db() as db:
             user_data = await self._get_user_gacha(db, user_id)
             if not user_data:
@@ -77,20 +88,17 @@ class ArknightsGachaPlugin(Star):
                 yield event.plain_result(f"合成玉不足！需要 {cost}，当前 {user_data['orundum']}")
                 return
 
-            # 扣除货币
             await db.execute(
                 "UPDATE user_gacha SET orundum = orundum - ? WHERE user_id = ?",
                 (cost, user_id)
             )
             await db.commit()
 
-        # 执行抽卡
         banner_id = await self._get_effective_banner_id(user_data.get("current_banner_id", 1))
         try:
             result = await self.engine.pull_single(user_id, banner_id)
 
-            # 渲染结果
-            image_bytes = self.renderer.render_single_pull(result)
+            image_bytes = self.gacha_renderer.render_single_pull(result)
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 f.write(image_bytes)
                 temp_path = f.name
@@ -102,19 +110,17 @@ class ArknightsGachaPlugin(Star):
 
             try:
                 os.unlink(temp_path)
-            except:
+            except Exception:
                 pass
         except Exception as e:
             logger.error(f"抽卡失败: {e}")
             yield event.plain_result(f"抽卡失败: {e}")
 
-    # ========== 命令: /方舟十连 ==========
     @filter.command("方舟十连")
     async def on_ten_pull(self, event: AstrMessageEvent):
         """十连抽"""
         user_id = self._get_user_id(event)
 
-        # 检查货币
         async with self._get_db() as db:
             user_data = await self._get_user_gacha(db, user_id)
             if not user_data:
@@ -126,20 +132,17 @@ class ArknightsGachaPlugin(Star):
                 yield event.plain_result(f"合成玉不足！需要 {cost}，当前 {user_data['orundum']}")
                 return
 
-            # 扣除货币
             await db.execute(
                 "UPDATE user_gacha SET orundum = orundum - ? WHERE user_id = ?",
                 (cost, user_id)
             )
             await db.commit()
 
-        # 执行十连
         banner_id = await self._get_effective_banner_id(user_data.get("current_banner_id", 1))
         try:
             results = await self.engine.pull_ten(user_id, banner_id)
 
-            # 渲染结果
-            image_bytes = self.renderer.render_ten_pull(results)
+            image_bytes = self.gacha_renderer.render_ten_pull(results)
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 f.write(image_bytes)
                 temp_path = f.name
@@ -151,13 +154,12 @@ class ArknightsGachaPlugin(Star):
 
             try:
                 os.unlink(temp_path)
-            except:
+            except Exception:
                 pass
         except Exception as e:
             logger.error(f"十连失败: {e}")
             yield event.plain_result(f"十连失败: {e}")
 
-    # ========== 命令: /方舟卡池 ==========
     @filter.command("方舟卡池")
     async def on_banner_list(self, event: AstrMessageEvent):
         """查看可用卡池"""
@@ -179,7 +181,6 @@ class ArknightsGachaPlugin(Star):
         text += "\n使用 /方舟切换卡池 <ID> 切换卡池"
         yield event.plain_result(text)
 
-    # ========== 命令: /方舟切换卡池 ==========
     @filter.command("方舟切换卡池")
     async def on_switch_banner(self, event: AstrMessageEvent):
         """切换当前卡池"""
@@ -202,7 +203,6 @@ class ArknightsGachaPlugin(Star):
         else:
             yield event.plain_result(f"卡池 {banner_id} 不存在")
 
-    # ========== 命令: /方舟背包 ==========
     @filter.command("方舟背包")
     async def on_inventory(self, event: AstrMessageEvent):
         """查看背包"""
@@ -214,7 +214,6 @@ class ArknightsGachaPlugin(Star):
                 yield event.plain_result("您还没有抽卡记录")
                 return
 
-            # 获取干员列表
             async with db.execute(
                 "SELECT op.*, uo.potential FROM user_operators uo "
                 "JOIN operator_pool op ON uo.char_id = op.char_id "
@@ -225,9 +224,8 @@ class ArknightsGachaPlugin(Star):
                 columns = [desc[0] for desc in cursor.description]
                 operators = [dict(zip(columns, row)) for row in rows]
 
-        # 渲染背包
         try:
-            image_bytes = self.renderer.render_inventory(user_data, operators)
+            image_bytes = self.gacha_renderer.render_inventory(user_data, operators)
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 f.write(image_bytes)
                 temp_path = f.name
@@ -239,13 +237,12 @@ class ArknightsGachaPlugin(Star):
 
             try:
                 os.unlink(temp_path)
-            except:
+            except Exception:
                 pass
         except Exception as e:
             logger.error(f"渲染背包失败: {e}")
             yield event.plain_result(f"渲染失败: {e}")
 
-    # ========== 命令: /方舟签到 ==========
     @filter.command("方舟签到")
     async def on_sign_in(self, event: AstrMessageEvent):
         """每日签到"""
@@ -257,7 +254,6 @@ class ArknightsGachaPlugin(Star):
                 await self._create_user_gacha(db, user_id)
                 user_data = await self._get_user_gacha(db, user_id)
 
-            # 检查今日是否已签到
             today = datetime.now().strftime("%Y-%m-%d")
             last_sign = user_data.get("sign_date", "")
 
@@ -265,7 +261,6 @@ class ArknightsGachaPlugin(Star):
                 yield event.plain_result("今日已签到，明天再来吧！")
                 return
 
-            # 发放奖励
             daily_orundum = self.config.get("daily_orundum", 200)
             await db.execute("""
                 UPDATE user_gacha
@@ -276,7 +271,6 @@ class ArknightsGachaPlugin(Star):
 
             yield event.plain_result(f"签到成功！获得 {daily_orundum} 合成玉")
 
-    # ========== 命令: /方舟抽卡统计 ==========
     @filter.command("方舟抽卡统计")
     async def on_statistics(self, event: AstrMessageEvent):
         """查看抽卡统计"""
@@ -288,9 +282,8 @@ class ArknightsGachaPlugin(Star):
                 yield event.plain_result("您还没有抽卡记录")
                 return
 
-        # 渲染统计
         try:
-            image_bytes = self.renderer.render_statistics(user_data)
+            image_bytes = self.gacha_renderer.render_statistics(user_data)
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 f.write(image_bytes)
                 temp_path = f.name
@@ -302,34 +295,175 @@ class ArknightsGachaPlugin(Star):
 
             try:
                 os.unlink(temp_path)
-            except:
+            except Exception:
                 pass
         except Exception as e:
             logger.error(f"渲染统计失败: {e}")
             yield event.plain_result(f"渲染失败: {e}")
 
-    # ========== 命令: /方舟更新数据 ==========
-    @filter.command("方舟更新数据")
-    async def on_update(self, event: AstrMessageEvent):
-        """更新游戏数据"""
-        yield event.plain_result("正在更新卡池数据，请稍候...")
+    # ========== 素材命令 ==========
 
-        success, msg = await self.banner_manager.sync_banners(force=True)
-        yield event.plain_result(f"卡池数据更新: {msg}")
+    @filter.command("方舟素材")
+    async def on_material(self, event: AstrMessageEvent):
+        """查看素材合成路线"""
+        name = self._get_text_arg(event)
+        if not name:
+            yield event.plain_result("请输入素材名称，例如: /方舟素材 聚酸酯")
+            return
+
+        item = await self.loader.get_item(name)
+        if not item:
+            yield event.plain_result(f"未找到素材: {name}")
+            return
+
+        tree = await self.loader.get_crafting_tree(item["item_id"], max_depth=2)
+        if not tree:
+            yield event.plain_result(f"未找到合成路线: {name}")
+            return
+
+        try:
+            tree_width = self.config.get("tree_width", 800)
+            tree_height = self.config.get("tree_height", 600)
+            image_bytes = self.material_renderer.render_crafting_tree(
+                tree, width=tree_width, height=tree_height
+            )
+
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                f.write(image_bytes)
+                temp_path = f.name
+
+            yield event.chain_result([
+                Comp.Plain(f"【{item['name']}】合成路线"),
+                Comp.Image.fromFileSystem(temp_path)
+            ])
+
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"渲染合成树失败: {e}")
+            yield event.plain_result(f"渲染失败: {e}")
+
+    @filter.command("方舟关卡")
+    async def on_stage(self, event: AstrMessageEvent):
+        """查看素材掉落关卡"""
+        name = self._get_text_arg(event)
+        if not name:
+            yield event.plain_result("请输入素材名称，例如: /方舟关卡 聚酸酯")
+            return
+
+        item = await self.loader.get_item(name)
+        if not item:
+            yield event.plain_result(f"未找到素材: {name}")
+            return
+
+        drops = await self.loader.get_stage_drops(item["item_id"])
+        if not drops:
+            yield event.plain_result(f"未找到掉落关卡: {name}")
+            return
+
+        try:
+            image_bytes = self.material_renderer.render_stage_drops(item["name"], drops)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                f.write(image_bytes)
+                temp_path = f.name
+
+            yield event.chain_result([
+                Comp.Plain(f"【{item['name']}】掉落关卡"),
+                Comp.Image.fromFileSystem(temp_path)
+            ])
+
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"渲染掉落列表失败: {e}")
+            text = f"【{item['name']}】掉落关卡:\n"
+            for drop in drops[:10]:
+                stage = drop["stage_name"]
+                rate = drop["drop_rate"]
+                sp = drop["sp_cost"]
+                rate_text = f"{rate * 100:.1f}%" if rate > 0 else "未知"
+                text += f"  {stage} | {rate_text} | {sp}理智\n"
+            yield event.plain_result(text)
+
+    @filter.command("方舟合成")
+    async def on_craft(self, event: AstrMessageEvent):
+        """查看完整合成成本"""
+        name = self._get_text_arg(event)
+        if not name:
+            yield event.plain_result("请输入素材名称，例如: /方舟合成 酮凝集组")
+            return
+
+        item = await self.loader.get_item(name)
+        if not item:
+            yield event.plain_result(f"未找到素材: {name}")
+            return
+
+        tree = await self.loader.get_crafting_tree(item["item_id"], max_depth=4)
+        if not tree:
+            yield event.plain_result(f"未找到合成路线: {name}")
+            return
+
+        try:
+            image_bytes = self.material_renderer.render_crafting_tree(
+                tree, width=1000, height=800
+            )
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                f.write(image_bytes)
+                temp_path = f.name
+
+            yield event.chain_result([
+                Comp.Plain(f"【{item['name']}】完整合成成本"),
+                Comp.Image.fromFileSystem(temp_path)
+            ])
+
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"渲染合成树失败: {e}")
+            yield event.plain_result(f"渲染失败: {e}")
+
+    # ========== 数据管理 ==========
+
+    @filter.command("方舟更新数据")
+    async def on_update_data(self, event: AstrMessageEvent):
+        """更新游戏数据（卡池 + 素材）"""
+        yield event.plain_result("正在更新游戏数据，请稍候...")
+
+        success1, msg1 = await self.banner_manager.sync_banners(force=True)
+        success2, msg2 = await self.loader.update_all(force=True)
+        count = await self.loader.get_item_count()
+
+        result = f"数据更新完成！\n\n【卡池数据】{msg1}\n【素材数据】{msg2}\n\n物品总数: {count}"
+        yield event.plain_result(result)
 
     # ========== 辅助方法 ==========
+
     def _get_user_id(self, event: AstrMessageEvent) -> str:
         """获取用户ID"""
         return event.get_sender_id() or "unknown"
 
     def _get_arg(self, event: AstrMessageEvent) -> str:
-        """获取命令参数"""
-        import re
+        """获取数字参数（用于切换卡池等）"""
         try:
             if hasattr(event, 'message_str') and event.message_str:
                 text = event.message_str.strip()
                 return re.sub(r'[^0-9]', '', text)
-        except:
+        except Exception:
+            pass
+        return ""
+
+    def _get_text_arg(self, event: AstrMessageEvent) -> str:
+        """获取文本参数（用于素材查询等）"""
+        try:
+            if hasattr(event, 'message_str') and event.message_str:
+                return event.message_str.strip()
+        except Exception:
             pass
         return ""
 
@@ -343,7 +477,6 @@ class ArknightsGachaPlugin(Star):
                 if await cursor.fetchone():
                     return current_banner_id
 
-            # 回退到最近的活跃卡池
             async with db.execute(
                 "SELECT id FROM banners WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
             ) as cursor:

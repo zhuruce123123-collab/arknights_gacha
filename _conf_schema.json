@@ -58,5 +58,28 @@
         "min": 40,
         "max": 60,
         "invisible": true
+    },
+    "auto_update_days": {
+        "description": "素材数据自动更新间隔(天)",
+        "type": "int",
+        "default": 7,
+        "min": 1,
+        "max": 30
+    },
+    "tree_width": {
+        "description": "合成树图片宽度",
+        "type": "int",
+        "default": 800,
+        "min": 600,
+        "max": 1200,
+        "invisible": true
+    },
+    "tree_height": {
+        "description": "合成树图片高度",
+        "type": "int",
+        "default": 600,
+        "min": 400,
+        "max": 1000,
+        "invisible": true
     }
 }
