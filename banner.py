@@ -15,6 +15,13 @@ logger = logging.getLogger(__name__)
 GITHUB_BASE = "https://raw.githubusercontent.com/Kengxxiao/ArknightsGameData/master/zh_CN/gamedata/excel/"
 GITEE_BASE = "https://gitee.com/Kengxxiao/ArknightsGameData/raw/master/zh_CN/gamedata/excel/"
 
+# GitHub 镜像代理（用于国内环境下载字体等文件）
+GITHUB_PROXIES = [
+    "https://edgeone.gh-proxy.com/",
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+]
+
 # 卡池类型映射
 POOL_TYPE_MAP = {
     "NORMAL": 0,      # 标准寻访
@@ -287,19 +294,32 @@ class BannerManager:
 
     async def load_operators_from_api(self) -> bool:
         """从 GitHub API 下载 character_table.json 并加载干员池"""
-        url = self.base_url + "character_table.json"
-        logger.info(f"Downloading character_table from {url}")
+        raw_url = self.base_url + "character_table.json"
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=180)) as resp:
-                    if resp.status != 200:
-                        logger.error(f"Failed to download character_table: HTTP {resp.status}")
-                        return False
-                    text = await resp.text(encoding='utf-8')
-                    data = json.loads(text)
-        except Exception as e:
-            logger.error(f"Failed to download character_table: {e}")
+        # 构建下载源列表：原始 URL + 镜像代理（仅对 GitHub 源）
+        urls = [raw_url]
+        if self.source != "gitee":
+            for proxy in GITHUB_PROXIES:
+                urls.append(proxy + raw_url)
+
+        data = None
+        for url in urls:
+            try:
+                logger.info(f"Downloading character_table from {url}")
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=180)) as resp:
+                        if resp.status == 200:
+                            text = await resp.text(encoding='utf-8')
+                            data = json.loads(text)
+                            break
+                        else:
+                            logger.warning(f"HTTP {resp.status} from {url}")
+            except Exception as e:
+                logger.warning(f"Failed to download from {url}: {e}")
+                continue
+
+        if not data:
+            logger.error("All character_table download sources failed")
             return False
 
         await self.load_operator_pool(data)
@@ -326,11 +346,15 @@ class BannerManager:
             logger.info(f"Font already exists: {font_path}")
             return font_path
 
-        # 尝试多个下载源
-        urls = [
-            "https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf",
-            "https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf",
-        ]
+        # 原始 URL
+        raw_url = "https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf"
+
+        # 构建下载源列表：原始 URL + 镜像代理
+        urls = [raw_url]
+        for proxy in GITHUB_PROXIES:
+            urls.append(proxy + raw_url)
+        # jsdelivr CDN 作为备用
+        urls.append("https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf")
 
         for url in urls:
             try:
@@ -344,6 +368,8 @@ class BannerManager:
                                     f.write(data)
                                 logger.info(f"Font downloaded: {font_path} ({len(data)} bytes)")
                                 return font_path
+                            else:
+                                logger.warning(f"Downloaded file too small ({len(data)} bytes), trying next source")
             except Exception as e:
                 logger.warning(f"Font download failed from {url}: {e}")
                 continue
