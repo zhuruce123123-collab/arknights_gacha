@@ -1,0 +1,62 @@
+{
+    "data_source": {
+        "description": "游戏数据来源",
+        "type": "string",
+        "default": "github",
+        "options": ["github", "gitee"],
+        "hint": "github: Kengxxiao/ArknightsGameData (推荐)"
+    },
+    "daily_orundum": {
+        "description": "每日签到合成玉数量",
+        "type": "int",
+        "default": 200,
+        "min": 0,
+        "max": 1000
+    },
+    "single_pull_cost": {
+        "description": "单抽消耗合成玉",
+        "type": "int",
+        "default": 600,
+        "min": 100,
+        "max": 1000
+    },
+    "ten_pull_cost": {
+        "description": "十连消耗合成玉",
+        "type": "int",
+        "default": 6000,
+        "min": 1000,
+        "max": 10000
+    },
+    "base_rate_6star": {
+        "description": "6星基础概率(%)",
+        "type": "int",
+        "default": 2,
+        "min": 1,
+        "max": 10,
+        "invisible": true
+    },
+    "base_rate_5star": {
+        "description": "5星基础概率(%)",
+        "type": "int",
+        "default": 8,
+        "min": 1,
+        "max": 20,
+        "invisible": true
+    },
+    "soft_pity_start": {
+        "description": "软保底起始抽数",
+        "type": "int",
+        "default": 40,
+        "min": 30,
+        "max": 45,
+        "invisible": true
+    },
+    "hard_pity": {
+        "description": "硬保底抽数",
+        "type": "int",
+        "default": 50,
+        "min": 40,
+        "max": 60,
+        "invisible": true
+    }
+}
