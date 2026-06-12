@@ -85,7 +85,7 @@ class ArknightsGachaPlugin(Star):
             await db.commit()
 
         # 执行抽卡
-        banner_id = user_data.get("current_banner_id", 1)
+        banner_id = await self._get_effective_banner_id(user_data.get("current_banner_id", 1))
         try:
             result = await self.engine.pull_single(user_id, banner_id)
 
@@ -134,7 +134,7 @@ class ArknightsGachaPlugin(Star):
             await db.commit()
 
         # 执行十连
-        banner_id = user_data.get("current_banner_id", 1)
+        banner_id = await self._get_effective_banner_id(user_data.get("current_banner_id", 1))
         try:
             results = await self.engine.pull_ten(user_id, banner_id)
 
@@ -324,14 +324,34 @@ class ArknightsGachaPlugin(Star):
 
     def _get_arg(self, event: AstrMessageEvent) -> str:
         """获取命令参数"""
+        import re
         try:
             if hasattr(event, 'message_str') and event.message_str:
-                return event.message_str.strip()
-            if hasattr(event, 'message') and event.message:
-                return str(event.message).strip()
+                text = event.message_str.strip()
+                return re.sub(r'[^0-9]', '', text)
         except:
             pass
         return ""
+
+    async def _get_effective_banner_id(self, current_banner_id: int) -> int:
+        """获取有效的卡池ID，当前卡池不可用时回退到活跃卡池"""
+        async with self._get_db() as db:
+            async with db.execute(
+                "SELECT id FROM banners WHERE id = ? AND is_active = 1",
+                (current_banner_id,)
+            ) as cursor:
+                if await cursor.fetchone():
+                    return current_banner_id
+
+            # 回退到最近的活跃卡池
+            async with db.execute(
+                "SELECT id FROM banners WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return row[0]
+
+        return current_banner_id
 
     def _get_db(self):
         """获取数据库连接"""
