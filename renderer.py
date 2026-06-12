@@ -108,16 +108,9 @@ def _has_cjk_support(font) -> bool:
         return False
 
 
-def _render_stars(rarity: int, font) -> str:
-    """渲染星级，如果字体不支持 ★ 则回退到 ASCII"""
-    star_char = "★"
-    try:
-        bbox = font.getbbox(star_char)
-        if bbox is None or (bbox[2] - bbox[0]) <= 0:
-            star_char = "*"
-    except Exception:
-        star_char = "*"
-    return star_char * rarity
+def _render_stars(rarity: int) -> str:
+    """渲染星级 - 使用数字 + 星字，避免特殊字符问题"""
+    return f"{rarity}星"
 
 
 def _draw_rounded_rect(draw: ImageDraw.Draw, xy: tuple, radius: int, fill: tuple):
@@ -163,7 +156,7 @@ class GachaRenderer:
         draw.text((x, 80), name_text, fill=rarity_color, font=font_name)
 
         # 星级
-        stars = _render_stars(result.rarity, font_rarity)
+        stars = _render_stars(result.rarity)
         bbox = font_rarity.getbbox(stars)
         stars_width = bbox[2] - bbox[0]
         x = (width - stars_width) // 2
@@ -210,8 +203,7 @@ class GachaRenderer:
             if r.rarity in rarity_counts:
                 rarity_counts[r.rarity] += 1
 
-        star_char = "★" if _has_cjk_support(font_name) else "*"
-        stats_text = f"6{star_char}: {rarity_counts[6]}  5{star_char}: {rarity_counts[5]}  4{star_char}: {rarity_counts[4]}"
+        stats_text = f"6星：{rarity_counts[6]}  5星：{rarity_counts[5]}  4星：{rarity_counts[4]}"
         draw.text((20, 65), stats_text, fill=(180, 180, 180), font=font_name)
 
         # 绘制结果网格 (2列 x 5行)
@@ -237,7 +229,7 @@ class GachaRenderer:
                 name_text += " [新]"
             draw.text((x + 15, y + 10), name_text, fill=(255, 255, 255), font=font_name)
 
-            stars = _render_stars(result.rarity, font_stars)
+            stars = _render_stars(result.rarity)
             draw.text((x + 15, y + 45), stars, fill=rarity_color, font=font_stars)
 
             rarity_text = f"{result.rarity}星"
@@ -290,7 +282,7 @@ class GachaRenderer:
             potential = op.get("potential", 1)
 
             rarity_color = RARITY_COLORS.get(rarity, (128, 128, 128))
-            stars = _render_stars(rarity, font_small)
+            stars = _render_stars(rarity)
 
             draw.text((20, y), name, fill=(255, 255, 255), font=font_body)
             draw.text((200, y), stars, fill=rarity_color, font=font_small)
