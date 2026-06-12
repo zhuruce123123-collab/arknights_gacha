@@ -2,6 +2,7 @@
 卡池数据模型 + gacha_table 解析
 """
 import json
+import os
 import aiosqlite
 import aiohttp
 import logging
@@ -283,3 +284,69 @@ class BannerManager:
 
             await db.commit()
             logger.info(f"Loaded {count} operators to pool")
+
+    async def load_operators_from_api(self) -> bool:
+        """从 GitHub API 下载 character_table.json 并加载干员池"""
+        url = self.base_url + "character_table.json"
+        logger.info(f"Downloading character_table from {url}")
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=180)) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Failed to download character_table: HTTP {resp.status}")
+                        return False
+                    text = await resp.text(encoding='utf-8')
+                    data = json.loads(text)
+        except Exception as e:
+            logger.error(f"Failed to download character_table: {e}")
+            return False
+
+        await self.load_operator_pool(data)
+
+        # 验证加载结果
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM operator_pool") as cursor:
+                row = await cursor.fetchone()
+                count = row[0] if row else 0
+                logger.info(f"Operator pool now has {count} entries")
+                return count > 0
+
+    async def download_font(self, font_dir: str) -> Optional[str]:
+        """
+        下载中文字体到指定目录
+
+        Returns:
+            字体文件路径，失败返回 None
+        """
+        os.makedirs(font_dir, exist_ok=True)
+        font_path = os.path.join(font_dir, "NotoSansSC-Regular.ttf")
+
+        if os.path.exists(font_path) and os.path.getsize(font_path) > 100000:
+            logger.info(f"Font already exists: {font_path}")
+            return font_path
+
+        # 尝试多个下载源
+        urls = [
+            "https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf",
+            "https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf",
+        ]
+
+        for url in urls:
+            try:
+                logger.info(f"Trying to download font from {url}")
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            if len(data) > 100000:
+                                with open(font_path, "wb") as f:
+                                    f.write(data)
+                                logger.info(f"Font downloaded: {font_path} ({len(data)} bytes)")
+                                return font_path
+            except Exception as e:
+                logger.warning(f"Font download failed from {url}: {e}")
+                continue
+
+        logger.error("All font download sources failed")
+        return None

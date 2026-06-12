@@ -58,6 +58,23 @@ class ArknightsToolboxPlugin(Star):
         # 初始化抽卡数据库
         await self.banner_manager.initialize_db()
 
+        # 下载中文字体（如果缺失）
+        await self.banner_manager.download_font(self.font_dir)
+
+        # 加载干员池（如果为空）
+        async with self._get_db() as db:
+            async with db.execute("SELECT COUNT(*) FROM operator_pool") as cursor:
+                row = await cursor.fetchone()
+                op_count = row[0] if row else 0
+
+        if op_count == 0:
+            logger.info("干员池为空，正在从 API 加载...")
+            success = await self.banner_manager.load_operators_from_api()
+            if success:
+                logger.info("干员池加载成功")
+            else:
+                logger.warning("干员池加载失败，抽卡将使用默认干员")
+
         # 初始化素材数据库
         await self.loader.initialize_db()
         count = await self.loader.get_item_count()

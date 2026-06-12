@@ -1,3 +1,6 @@
 __pycache__/
 data/
 *.pyc
+resource/fonts/*.ttf
+resource/fonts/*.otf
+.qoder/
