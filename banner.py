@@ -292,6 +292,46 @@ class BannerManager:
             await db.commit()
             logger.info(f"Loaded {count} operators to pool")
 
+    async def load_operators_from_local(self, resource_dir: str) -> bool:
+        """
+        从本地 operators.json 加载干员池
+
+        Args:
+            resource_dir: resource 目录路径
+
+        Returns:
+            是否成功加载
+        """
+        operators_file = os.path.join(resource_dir, "operators.json")
+        if not os.path.exists(operators_file):
+            return False
+
+        try:
+            with open(operators_file, "r", encoding="utf-8") as f:
+                operators = json.load(f)
+
+            async with aiosqlite.connect(self.db_path) as db:
+                count = 0
+                for char_id, data in operators.items():
+                    name = data.get("name", "")
+                    rarity = data.get("rarity", 1)
+                    is_limited = data.get("is_limited", 0)
+                    is_classic = data.get("is_classic", 0)
+
+                    await db.execute("""
+                        INSERT OR REPLACE INTO operator_pool
+                        (char_id, name, rarity, is_limited, is_classic)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (char_id, name, rarity, is_limited, is_classic))
+                    count += 1
+
+                await db.commit()
+                logger.info(f"Loaded {count} operators from local file")
+                return count > 0
+        except Exception as e:
+            logger.error(f"Failed to load operators from local file: {e}")
+            return False
+
     async def load_operators_from_api(self) -> bool:
         """从 GitHub API 下载 character_table.json 并加载干员池"""
         raw_url = self.base_url + "character_table.json"

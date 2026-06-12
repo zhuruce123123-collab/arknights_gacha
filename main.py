@@ -58,22 +58,26 @@ class ArknightsToolboxPlugin(Star):
         # 初始化抽卡数据库
         await self.banner_manager.initialize_db()
 
-        # 下载中文字体（如果缺失）
-        await self.banner_manager.download_font(self.font_dir)
-
-        # 加载干员池（如果为空）
+        # 加载干员池（优先本地文件，其次 API 下载）
         async with self._get_db() as db:
             async with db.execute("SELECT COUNT(*) FROM operator_pool") as cursor:
                 row = await cursor.fetchone()
                 op_count = row[0] if row else 0
 
         if op_count == 0:
-            logger.info("干员池为空，正在从 API 加载...")
-            success = await self.banner_manager.load_operators_from_api()
-            if success:
-                logger.info("干员池加载成功")
+            # 尝试从本地 operators.json 加载
+            resource_dir = os.path.join(os.path.dirname(__file__), "resource")
+            success = await self.banner_manager.load_operators_from_local(resource_dir)
+            if not success:
+                # 本地文件不存在或加载失败，尝试从 API 下载
+                logger.info("本地干员数据不可用，正在从 API 加载...")
+                success = await self.banner_manager.load_operators_from_api()
+                if success:
+                    logger.info("干员池从 API 加载成功")
+                else:
+                    logger.warning("干员池加载失败，抽卡将使用默认干员")
             else:
-                logger.warning("干员池加载失败，抽卡将使用默认干员")
+                logger.info("干员池从本地文件加载成功")
 
         # 初始化素材数据库
         await self.loader.initialize_db()
