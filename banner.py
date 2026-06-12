@@ -294,7 +294,7 @@ class BannerManager:
 
     async def load_operators_from_local(self, resource_dir: str) -> bool:
         """
-        从本地 operators.json 加载干员池
+        从本地 operators.json 或 character_table.json 加载干员池
 
         Args:
             resource_dir: resource 目录路径
@@ -302,21 +302,54 @@ class BannerManager:
         Returns:
             是否成功加载
         """
+        # 优先尝试 operators.json（精简版）
         operators_file = os.path.join(resource_dir, "operators.json")
-        if not os.path.exists(operators_file):
+        character_table_file = os.path.join(resource_dir, "character_table.json")
+
+        data = None
+        source_name = ""
+
+        if os.path.exists(operators_file):
+            try:
+                with open(operators_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                source_name = "operators.json"
+            except Exception as e:
+                logger.warning(f"Failed to load operators.json: {e}")
+
+        if not data and os.path.exists(character_table_file):
+            try:
+                with open(character_table_file, "r", encoding="utf-8") as f:
+                    full_data = json.load(f)
+                # 提取干员数据
+                data = {}
+                for char_id, char in full_data.items():
+                    if char_id.startswith("char_") and "#" not in char_id:
+                        name = char.get("name", "")
+                        rarity_str = char.get("rarity", "TIER_1")
+                        rarity_map = {"TIER_1": 1, "TIER_2": 2, "TIER_3": 3,
+                                     "TIER_4": 4, "TIER_5": 5, "TIER_6": 6}
+                        rarity = rarity_map.get(rarity_str, 1)
+                        if rarity >= 3:
+                            data[char_id] = {"name": name, "rarity": rarity}
+                source_name = "character_table.json"
+            except Exception as e:
+                logger.warning(f"Failed to load character_table.json: {e}")
+
+        if not data:
             return False
 
         try:
-            with open(operators_file, "r", encoding="utf-8") as f:
-                operators = json.load(f)
-
             async with aiosqlite.connect(self.db_path) as db:
                 count = 0
-                for char_id, data in operators.items():
-                    name = data.get("name", "")
-                    rarity = data.get("rarity", 1)
-                    is_limited = data.get("is_limited", 0)
-                    is_classic = data.get("is_classic", 0)
+                for char_id, char_data in data.items():
+                    if isinstance(char_data, dict):
+                        name = char_data.get("name", "")
+                        rarity = char_data.get("rarity", 1)
+                        is_limited = char_data.get("is_limited", 0)
+                        is_classic = char_data.get("is_classic", 0)
+                    else:
+                        continue
 
                     await db.execute("""
                         INSERT OR REPLACE INTO operator_pool
@@ -326,7 +359,7 @@ class BannerManager:
                     count += 1
 
                 await db.commit()
-                logger.info(f"Loaded {count} operators from local file")
+                logger.info(f"Loaded {count} operators from {source_name}")
                 return count > 0
         except Exception as e:
             logger.error(f"Failed to load operators from local file: {e}")
