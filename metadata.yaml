@@ -2,6 +2,6 @@ name: arknights_gacha
 display_name: 方舟抽卡模拟
 description: 明日方舟抽卡模拟器，支持单抽/十连/卡池切换/签到/背包管理
 author: 皮皮朱
-version: 1.0.0
+version: 1.0.1
 repo: https://github.com/zhuruce123123-collab/arknights_gacha
 main: main.py
