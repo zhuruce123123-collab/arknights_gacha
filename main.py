@@ -17,11 +17,12 @@ from .engine import GachaEngine
 from .banner import BannerManager
 from .crafting import MaterialDataLoader
 from .renderer import GachaRenderer, MaterialRenderer, GachaAssetLoader, AssetGachaRenderer
+from .asset_downloader import GachaAssetDownloader
 
 logger = logging.getLogger(__name__)
 
 
-@register("arknights_gacha", "皮皮朱", "明日方舟工具箱", "2.4.0")
+@register("arknights_gacha", "皮皮朱", "明日方舟工具箱", "2.5.0")
 class ArknightsToolboxPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -34,25 +35,18 @@ class ArknightsToolboxPlugin(Star):
         self.font_dir = os.path.join(self.resource_dir, "fonts")
 
         # 初始化抽卡组件
-        source = config.get("data_source", "github")
+        source = config.get("data_source", "github") if config else "github"
         self.banner_manager = BannerManager(self.db_path, source)
         self.engine = GachaEngine(self.db_path, config)
 
-        # 初始化渲染器（优先使用游戏素材）
-        base_renderer = GachaRenderer(self.font_dir, self.resource_dir)
-        assets_dir = os.path.join(self.resource_dir, "gacha_assets")
-        if os.path.isdir(assets_dir):
-            try:
-                asset_loader = GachaAssetLoader(assets_dir)
-                self.gacha_renderer = AssetGachaRenderer(asset_loader, base_renderer)
-                logger.info("[初始化] 游戏素材渲染器已启用")
-            except Exception as e:
-                logger.warning(f"[初始化] 素材加载失败，使用程序化渲染: {e}")
-                self.gacha_renderer = base_renderer
-        else:
-            self.gacha_renderer = base_renderer
+        # 基础渲染器（始终可用）
+        self.base_renderer = GachaRenderer(self.font_dir, self.resource_dir)
+        self.gacha_renderer = self.base_renderer  # 默认使用程序化渲染
 
-        # 初始化素材组件 (BUG-17: 传入 config)
+        # 素材下载器
+        self.asset_downloader = GachaAssetDownloader(self.resource_dir, self.config)
+
+        # 初始化素材组件
         self.loader = MaterialDataLoader(self.data_dir, source, config)
         self.material_renderer = MaterialRenderer(self.font_dir)
 
@@ -113,6 +107,27 @@ class ArknightsToolboxPlugin(Star):
             logger.info("素材数据库为空，首次使用请执行 /方舟更新数据")
         else:
             logger.info(f"素材数据库已有 {count} 个物品")
+
+        # 初始化游戏素材渲染器（自动下载）
+        await self._init_asset_renderer()
+
+    async def _init_asset_renderer(self):
+        """初始化游戏素材渲染器，必要时自动下载"""
+        if not self.asset_downloader.is_downloaded:
+            logger.info("[初始化] 游戏素材未安装，尝试下载...")
+            success = await self.asset_downloader.download_assets()
+            if not success:
+                logger.warning("[初始化] 素材下载失败，使用程序化渲染")
+                return
+
+        # 素材已就绪，加载并启用
+        try:
+            asset_loader = GachaAssetLoader(self.asset_downloader.assets_dir)
+            self.gacha_renderer = AssetGachaRenderer(asset_loader, self.base_renderer)
+            logger.info("[初始化] 游戏素材渲染器已启用")
+        except Exception as e:
+            logger.warning(f"[初始化] 素材加载失败，使用程序化渲染: {e}")
+            self.gacha_renderer = self.base_renderer
 
     async def terminate(self):
         """插件终止"""
@@ -456,6 +471,26 @@ class ArknightsToolboxPlugin(Star):
 
         result = f"数据更新完成！\n\n【卡池数据】{msg1}\n【素材数据】{msg2}\n\n物品总数: {count}"
         yield event.plain_result(result)
+
+    @filter.command("方舟更新素材")
+    async def on_update_assets(self, event: AstrMessageEvent):
+        """手动更新游戏素材（抽卡立绘）"""
+        event.stop_event()
+
+        current_ver = self.asset_downloader.get_installed_version()
+        yield event.plain_result(f"当前素材版本: {current_ver}\n正在下载最新素材包，请稍候...")
+
+        async def progress(msg: str):
+            logger.info(f"[AssetDownloader] {msg}")
+
+        success = await self.asset_downloader.download_assets(progress_callback=progress)
+
+        if success:
+            # 重新加载渲染器
+            await self._init_asset_renderer()
+            yield event.plain_result(f"素材更新完成！版本: {self.asset_downloader.get_installed_version()}")
+        else:
+            yield event.plain_result("素材更新失败，请检查网络连接后重试")
 
     # ========== 辅助方法 ==========
 
