@@ -1,6 +1,7 @@
 """
 AstrBot 明日方舟工具箱插件
 """
+import contextlib
 import os
 import re
 import logging
@@ -15,12 +16,12 @@ import astrbot.api.message_components as Comp
 from .engine import GachaEngine
 from .banner import BannerManager
 from .crafting import MaterialDataLoader
-from .renderer import GachaRenderer, MaterialRenderer
+from .renderer import GachaRenderer, MaterialRenderer, GachaAssetLoader, AssetGachaRenderer
 
 logger = logging.getLogger(__name__)
 
 
-@register("arknights_gacha", "皮皮朱", "明日方舟工具箱", "2.0.0")
+@register("arknights_gacha", "皮皮朱", "明日方舟工具箱", "2.1.0")
 class ArknightsToolboxPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -36,10 +37,23 @@ class ArknightsToolboxPlugin(Star):
         source = config.get("data_source", "github")
         self.banner_manager = BannerManager(self.db_path, source)
         self.engine = GachaEngine(self.db_path, config)
-        self.gacha_renderer = GachaRenderer(self.font_dir, self.resource_dir)
 
-        # 初始化素材组件
-        self.loader = MaterialDataLoader(self.data_dir, source)
+        # 初始化渲染器（优先使用游戏素材）
+        base_renderer = GachaRenderer(self.font_dir, self.resource_dir)
+        assets_dir = os.path.join(self.resource_dir, "gacha_assets")
+        if os.path.isdir(assets_dir):
+            try:
+                asset_loader = GachaAssetLoader(assets_dir)
+                self.gacha_renderer = AssetGachaRenderer(asset_loader, base_renderer)
+                logger.info("[初始化] 游戏素材渲染器已启用")
+            except Exception as e:
+                logger.warning(f"[初始化] 素材加载失败，使用程序化渲染: {e}")
+                self.gacha_renderer = base_renderer
+        else:
+            self.gacha_renderer = base_renderer
+
+        # 初始化素材组件 (BUG-17: 传入 config)
+        self.loader = MaterialDataLoader(self.data_dir, source, config)
         self.material_renderer = MaterialRenderer(self.font_dir)
 
     def _get_data_dir(self) -> str:
@@ -104,48 +118,56 @@ class ArknightsToolboxPlugin(Star):
         """插件终止"""
         logger.info("明日方舟工具箱插件已终止")
 
+    # ========== 临时文件管理 ==========
+
+    @contextlib.contextmanager
+    def _temp_image(self, image_bytes: bytes, suffix: str = ".png"):
+        """
+        BUG-7: 临时文件上下文管理器，确保清理
+
+        写入图片字节到临时文件，yield 路径，在 finally 中保证删除。
+        """
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+            f.write(image_bytes)
+            temp_path = f.name
+        try:
+            yield temp_path
+        finally:
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+
     # ========== 抽卡命令 ==========
 
     @filter.command("方舟抽卡")
     async def on_single_pull(self, event: AstrMessageEvent):
         """单抽"""
         user_id = self._get_user_id(event)
+        cost = self.config.get("single_pull_cost", 600)
 
+        # BUG-2: 确保用户存在 (engine 内部也会检查，但这里需要提前获取 banner_id)
         async with self._get_db() as db:
-            user_data = await self._get_user_gacha(db, user_id)
+            user_data = await self.engine._get_user_gacha(db, user_id)
             if not user_data:
-                await self._create_user_gacha(db, user_id)
-                user_data = await self._get_user_gacha(db, user_id)
-
-            cost = self.config.get("single_pull_cost", 600)
-            if user_data["orundum"] < cost:
-                yield event.plain_result(f"合成玉不足！需要 {cost}，当前 {user_data['orundum']}")
-                return
-
-            await db.execute(
-                "UPDATE user_gacha SET orundum = orundum - ? WHERE user_id = ?",
-                (cost, user_id)
-            )
-            await db.commit()
+                await self.engine._create_user_gacha(db, user_id)
+                user_data = await self.engine._get_user_gacha(db, user_id)
 
         banner_id = await self._get_effective_banner_id(user_data.get("current_banner_id", 1))
         try:
-            result = await self.engine.pull_single(user_id, banner_id)
+            # BUG-2: 原子扣费 - cost 传入 engine，在同一事务中完成
+            result = await self.engine.pull_single(user_id, banner_id, cost=cost)
 
             image_bytes = self.gacha_renderer.render_single_pull(result)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                f.write(image_bytes)
-                temp_path = f.name
-
-            yield event.chain_result([
-                Comp.Plain(f"单抽结果:"),
-                Comp.Image.fromFileSystem(temp_path)
-            ])
-
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
+            # BUG-7: 使用上下文管理器确保临时文件清理
+            with self._temp_image(image_bytes) as temp_path:
+                yield event.chain_result([
+                    Comp.Plain(f"单抽结果:"),
+                    Comp.Image.fromFileSystem(temp_path)
+                ])
+        except ValueError as e:
+            # 合成玉不足等预期错误
+            yield event.plain_result(str(e))
         except Exception as e:
             logger.error(f"抽卡失败: {e}")
             yield event.plain_result(f"抽卡失败: {e}")
@@ -154,42 +176,29 @@ class ArknightsToolboxPlugin(Star):
     async def on_ten_pull(self, event: AstrMessageEvent):
         """十连抽"""
         user_id = self._get_user_id(event)
+        cost = self.config.get("ten_pull_cost", 6000)
 
+        # BUG-2: 确保用户存在
         async with self._get_db() as db:
-            user_data = await self._get_user_gacha(db, user_id)
+            user_data = await self.engine._get_user_gacha(db, user_id)
             if not user_data:
-                await self._create_user_gacha(db, user_id)
-                user_data = await self._get_user_gacha(db, user_id)
-
-            cost = self.config.get("ten_pull_cost", 6000)
-            if user_data["orundum"] < cost:
-                yield event.plain_result(f"合成玉不足！需要 {cost}，当前 {user_data['orundum']}")
-                return
-
-            await db.execute(
-                "UPDATE user_gacha SET orundum = orundum - ? WHERE user_id = ?",
-                (cost, user_id)
-            )
-            await db.commit()
+                await self.engine._create_user_gacha(db, user_id)
+                user_data = await self.engine._get_user_gacha(db, user_id)
 
         banner_id = await self._get_effective_banner_id(user_data.get("current_banner_id", 1))
         try:
-            results = await self.engine.pull_ten(user_id, banner_id)
+            # BUG-2: 原子扣费 - cost 传入 engine
+            results = await self.engine.pull_ten(user_id, banner_id, cost=cost)
 
             image_bytes = self.gacha_renderer.render_ten_pull(results)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                f.write(image_bytes)
-                temp_path = f.name
-
-            yield event.chain_result([
-                Comp.Plain(f"十连结果:"),
-                Comp.Image.fromFileSystem(temp_path)
-            ])
-
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
+            # BUG-7: 使用上下文管理器
+            with self._temp_image(image_bytes) as temp_path:
+                yield event.chain_result([
+                    Comp.Plain(f"十连结果:"),
+                    Comp.Image.fromFileSystem(temp_path)
+                ])
+        except ValueError as e:
+            yield event.plain_result(str(e))
         except Exception as e:
             logger.error(f"十连失败: {e}")
             yield event.plain_result(f"十连失败: {e}")
@@ -242,8 +251,9 @@ class ArknightsToolboxPlugin(Star):
         """查看背包"""
         user_id = self._get_user_id(event)
 
+        # DRY: 使用 engine 的方法
         async with self._get_db() as db:
-            user_data = await self._get_user_gacha(db, user_id)
+            user_data = await self.engine._get_user_gacha(db, user_id)
             if not user_data:
                 yield event.plain_result("您还没有抽卡记录")
                 return
@@ -260,19 +270,11 @@ class ArknightsToolboxPlugin(Star):
 
         try:
             image_bytes = self.gacha_renderer.render_inventory(user_data, operators)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                f.write(image_bytes)
-                temp_path = f.name
-
-            yield event.chain_result([
-                Comp.Plain(f"背包:"),
-                Comp.Image.fromFileSystem(temp_path)
-            ])
-
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
+            with self._temp_image(image_bytes) as temp_path:
+                yield event.chain_result([
+                    Comp.Plain(f"背包:"),
+                    Comp.Image.fromFileSystem(temp_path)
+                ])
         except Exception as e:
             logger.error(f"渲染背包失败: {e}")
             yield event.plain_result(f"渲染失败: {e}")
@@ -283,10 +285,10 @@ class ArknightsToolboxPlugin(Star):
         user_id = self._get_user_id(event)
 
         async with self._get_db() as db:
-            user_data = await self._get_user_gacha(db, user_id)
+            user_data = await self.engine._get_user_gacha(db, user_id)
             if not user_data:
-                await self._create_user_gacha(db, user_id)
-                user_data = await self._get_user_gacha(db, user_id)
+                await self.engine._create_user_gacha(db, user_id)
+                user_data = await self.engine._get_user_gacha(db, user_id)
 
             today = datetime.now().strftime("%Y-%m-%d")
             last_sign = user_data.get("sign_date", "")
@@ -311,26 +313,18 @@ class ArknightsToolboxPlugin(Star):
         user_id = self._get_user_id(event)
 
         async with self._get_db() as db:
-            user_data = await self._get_user_gacha(db, user_id)
+            user_data = await self.engine._get_user_gacha(db, user_id)
             if not user_data:
                 yield event.plain_result("您还没有抽卡记录")
                 return
 
         try:
             image_bytes = self.gacha_renderer.render_statistics(user_data)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                f.write(image_bytes)
-                temp_path = f.name
-
-            yield event.chain_result([
-                Comp.Plain(f"抽卡统计:"),
-                Comp.Image.fromFileSystem(temp_path)
-            ])
-
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
+            with self._temp_image(image_bytes) as temp_path:
+                yield event.chain_result([
+                    Comp.Plain(f"抽卡统计:"),
+                    Comp.Image.fromFileSystem(temp_path)
+                ])
         except Exception as e:
             logger.error(f"渲染统计失败: {e}")
             yield event.plain_result(f"渲染失败: {e}")
@@ -362,19 +356,11 @@ class ArknightsToolboxPlugin(Star):
                 tree, width=tree_width, height=tree_height
             )
 
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                f.write(image_bytes)
-                temp_path = f.name
-
-            yield event.chain_result([
-                Comp.Plain(f"【{item['name']}】合成路线"),
-                Comp.Image.fromFileSystem(temp_path)
-            ])
-
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
+            with self._temp_image(image_bytes) as temp_path:
+                yield event.chain_result([
+                    Comp.Plain(f"【{item['name']}】合成路线"),
+                    Comp.Image.fromFileSystem(temp_path)
+                ])
         except Exception as e:
             logger.error(f"渲染合成树失败: {e}")
             yield event.plain_result(f"渲染失败: {e}")
@@ -399,19 +385,11 @@ class ArknightsToolboxPlugin(Star):
 
         try:
             image_bytes = self.material_renderer.render_stage_drops(item["name"], drops)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                f.write(image_bytes)
-                temp_path = f.name
-
-            yield event.chain_result([
-                Comp.Plain(f"【{item['name']}】掉落关卡"),
-                Comp.Image.fromFileSystem(temp_path)
-            ])
-
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
+            with self._temp_image(image_bytes) as temp_path:
+                yield event.chain_result([
+                    Comp.Plain(f"【{item['name']}】掉落关卡"),
+                    Comp.Image.fromFileSystem(temp_path)
+                ])
         except Exception as e:
             logger.error(f"渲染掉落列表失败: {e}")
             text = f"【{item['name']}】掉落关卡:\n"
@@ -445,19 +423,11 @@ class ArknightsToolboxPlugin(Star):
             image_bytes = self.material_renderer.render_crafting_tree(
                 tree, width=1000, height=800
             )
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                f.write(image_bytes)
-                temp_path = f.name
-
-            yield event.chain_result([
-                Comp.Plain(f"【{item['name']}】完整合成成本"),
-                Comp.Image.fromFileSystem(temp_path)
-            ])
-
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
+            with self._temp_image(image_bytes) as temp_path:
+                yield event.chain_result([
+                    Comp.Plain(f"【{item['name']}】完整合成成本"),
+                    Comp.Image.fromFileSystem(temp_path)
+                ])
         except Exception as e:
             logger.error(f"渲染合成树失败: {e}")
             yield event.plain_result(f"渲染失败: {e}")
@@ -524,23 +494,3 @@ class ArknightsToolboxPlugin(Star):
         """获取数据库连接"""
         import aiosqlite
         return aiosqlite.connect(self.db_path)
-
-    async def _get_user_gacha(self, db, user_id: str) -> dict:
-        """获取用户抽卡状态"""
-        async with db.execute(
-            "SELECT * FROM user_gacha WHERE user_id = ?", (user_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if not row:
-                return None
-            columns = [desc[0] for desc in cursor.description]
-            return dict(zip(columns, row))
-
-    async def _create_user_gacha(self, db, user_id: str):
-        """创建新用户"""
-        await db.execute("""
-            INSERT INTO user_gacha (user_id, orundum, permits, ten_permits,
-                                   yellow_tickets, green_tickets, pity_6, pity_5,
-                                   total_pulls, total_6stars, current_banner_id)
-            VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
-        """, (user_id,))

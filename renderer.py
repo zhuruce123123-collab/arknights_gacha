@@ -3,11 +3,14 @@
 参考 nonebot_plugin_gamedraw 的卡片式布局设计
 """
 import io
+import logging
 import math
 import os
 from PIL import Image, ImageDraw, ImageFont
 from .engine import GachaResult
 from .crafting import CraftingTree, RARITY_COLORS as CRAFT_RARITY_COLORS
+
+logger = logging.getLogger(__name__)
 
 
 # ========== 颜色配置 ==========
@@ -144,6 +147,10 @@ def _hex_to_rgb(hex_color: str) -> tuple:
 def _create_gradient_bg(width: int, height: int, color1: tuple, color2: tuple,
                         direction: str = "vertical") -> Image.Image:
     """创建渐变背景"""
+    # BUG-12: 防止除零
+    if width <= 0 or height <= 0:
+        return Image.new("RGBA", (max(width, 1), max(height, 1)), color1 + (255,))
+
     img = Image.new("RGBA", (width, height))
     pixels = img.load()
 
@@ -262,6 +269,9 @@ class GachaRenderer:
         self.font_dir = font_dir
         self.resource_dir = resource_dir
         self._avatar_cache = {}
+        # BUG-18: 自动创建头像目录
+        if resource_dir:
+            os.makedirs(os.path.join(resource_dir, "avatars"), exist_ok=True)
 
     def _load_avatar(self, char_id: str, name: str, size: tuple) -> Image.Image:
         """尝试加载干员头像图片"""
@@ -288,8 +298,9 @@ class GachaRenderer:
                 try:
                     avatar = Image.open(path).convert("RGBA")
                     break
-                except Exception:
-                    pass
+                except (OSError, IOError) as e:
+                    # BUG-15: 修复 bare except，记录日志
+                    logger.debug(f"加载头像失败 {path}: {e}")
 
         self._avatar_cache[char_id] = avatar
         if avatar is not None:
@@ -396,6 +407,14 @@ class GachaRenderer:
     def render_ten_pull(self, results: list, width: int = 780) -> bytes:
         """渲染十连结果 - 卡片网格布局"""
         count = len(results)
+        # BUG-11: 空列表防护
+        if count == 0:
+            img = Image.new("RGB", (width, 100), _hex_to_rgb(BG_COLOR))
+            draw = ImageDraw.Draw(img)
+            font = _get_font(self.font_dir, 18)
+            draw.text((20, 35), "暂无抽卡结果", fill=GRAY_TEXT, font=font)
+            return _to_bytes(img)
+
         num_per_row = min(5, count)
         rows = math.ceil(count / num_per_row)
 
@@ -510,7 +529,7 @@ class GachaRenderer:
         orundum = user_data.get("orundum", 0)
         permits = user_data.get("permits", 0)
         ten_permits = user_data.get("ten_permits", 0)
-        yellow_tickets = user_data.get("green_tickets", 0)
+        yellow_tickets = user_data.get("yellow_tickets", 0)
         draw.text((20, 42), f"合成玉: {orundum}", fill=(78, 126, 189), font=font_small)
         draw.text((160, 42), f"单抽券: {permits}  十连券: {ten_permits}", fill=GRAY_TEXT, font=font_small)
         draw.text((20, 62), f"黄票: {yellow_tickets}", fill=(233, 178, 60), font=font_small)
@@ -865,3 +884,179 @@ class MaterialRenderer:
             y += line_height
 
         return _to_bytes(img)
+
+
+# ========== 游戏素材渲染器 ==========
+
+class GachaAssetLoader:
+    """加载和管理游戏抽卡素材（rarity 模板 + 干员立绘）"""
+
+    def __init__(self, assets_dir: str):
+        self.assets_dir = assets_dir
+        self._rarity_templates = {}  # rarity -> Image (缓存)
+        self._ten_pull_assets = {}   # (name, rarity) -> filepath
+        self._single_pull_assets = {}  # (name, rarity) -> filepath
+
+        self._scan_assets()
+        self._load_rarity_templates()
+
+        logger.info(f"[AssetLoader] 素材加载完成: 十连立绘 {len(self._ten_pull_assets)} 个, "
+                    f"单抽立绘 {len(self._single_pull_assets)} 个")
+
+    def _scan_assets(self):
+        """扫描素材目录，构建映射字典"""
+        # 扫描十连立绘 (chars_r2)
+        chars_r2_dir = os.path.join(self.assets_dir, "chars_r2")
+        if os.path.isdir(chars_r2_dir):
+            for rarity_dir in os.listdir(chars_r2_dir):
+                rarity_path = os.path.join(chars_r2_dir, rarity_dir)
+                if not os.path.isdir(rarity_path):
+                    continue
+                try:
+                    rarity = int(rarity_dir)
+                except ValueError:
+                    continue
+                for filename in os.listdir(rarity_path):
+                    if filename.endswith(".png"):
+                        name = filename[:-4]  # 去掉 .png
+                        self._ten_pull_assets[(name, rarity)] = os.path.join(rarity_path, filename)
+
+        # 扫描单抽立绘 (chars)
+        chars_dir = os.path.join(self.assets_dir, "chars")
+        if os.path.isdir(chars_dir):
+            for rarity_dir in os.listdir(chars_dir):
+                rarity_path = os.path.join(chars_dir, rarity_dir)
+                if not os.path.isdir(rarity_path):
+                    continue
+                try:
+                    rarity = int(rarity_dir)
+                except ValueError:
+                    continue
+                for filename in os.listdir(rarity_path):
+                    if filename.endswith(".png"):
+                        name = filename[:-4]
+                        self._single_pull_assets[(name, rarity)] = os.path.join(rarity_path, filename)
+
+    def _load_rarity_templates(self):
+        """预加载 rarity 模板到内存"""
+        rarity_dir = os.path.join(self.assets_dir, "rarity")
+        if not os.path.isdir(rarity_dir):
+            logger.warning("[AssetLoader] rarity 模板目录不存在")
+            return
+
+        for i in range(1, 7):
+            path = os.path.join(rarity_dir, f"{i}.png")
+            if os.path.exists(path):
+                try:
+                    self._rarity_templates[i] = Image.open(path).convert("RGBA")
+                except Exception as e:
+                    logger.warning(f"[AssetLoader] 加载 rarity/{i}.png 失败: {e}")
+
+    def has_asset(self, name: str, rarity: int, mode: str = "ten_pull") -> bool:
+        """检查素材是否存在"""
+        if mode == "ten_pull":
+            return (name, rarity) in self._ten_pull_assets
+        elif mode == "single_pull":
+            return (name, rarity) in self._single_pull_assets
+        return False
+
+    def load_portrait(self, name: str, rarity: int) -> Image.Image:
+        """加载十连干员肖像 (122x580)"""
+        key = (name, rarity)
+        if key not in self._ten_pull_assets:
+            return None
+        try:
+            return Image.open(self._ten_pull_assets[key]).convert("RGBA")
+        except Exception as e:
+            logger.warning(f"[AssetLoader] 加载立绘失败 {name} (rarity={rarity}): {e}")
+            return None
+
+    def load_single(self, name: str, rarity: int) -> Image.Image:
+        """加载单抽干员立绘 (1280x720)"""
+        key = (name, rarity)
+        if key not in self._single_pull_assets:
+            return None
+        try:
+            return Image.open(self._single_pull_assets[key]).convert("RGBA")
+        except Exception as e:
+            logger.warning(f"[AssetLoader] 加载单抽立绘失败 {name} (rarity={rarity}): {e}")
+            return None
+
+    def get_rarity_template(self, rarity: int) -> Image.Image:
+        """获取 rarity 模板（已缓存）"""
+        return self._rarity_templates.get(rarity)
+
+
+class AssetGachaRenderer:
+    """基于游戏素材的抽卡渲染器（装饰器模式）"""
+
+    # 十连槽位参数（从参考项目提取）
+    SLOT_START_X = 28
+    SLOT_WIDTH = 122
+    SLOT_END_X = 150  # SLOT_START_X + SLOT_WIDTH
+    TOP_HEIGHT = 580
+    BOTTOM_START = 580
+    BOTTOM_END = 720
+    CANVAS_WIDTH = 1280
+    CANVAS_HEIGHT = 720
+
+    def __init__(self, asset_loader: GachaAssetLoader, fallback_renderer: GachaRenderer):
+        self.asset_loader = asset_loader
+        self.fallback = fallback_renderer
+
+    def render_single_pull(self, result: GachaResult, width: int = 400, height: int = 300) -> bytes:
+        """单抽渲染：优先使用游戏素材，缺失则 fallback"""
+        img = self.asset_loader.load_single(result.name, result.rarity)
+        if img is not None:
+            return _to_bytes(img)
+        # fallback 到程序化渲染
+        return self.fallback.render_single_pull(result, width, height)
+
+    def render_ten_pull(self, results: list, width: int = 780) -> bytes:
+        """十连渲染：全部有素材则合成，否则 fallback"""
+        # 检查所有干员是否都有素材
+        for result in results:
+            if not self.asset_loader.has_asset(result.name, result.rarity, "ten_pull"):
+                logger.info(f"[AssetRenderer] 干员 '{result.name}' 无十连素材，使用 fallback")
+                return self.fallback.render_ten_pull(results, width)
+
+        # 执行素材合成
+        return self._compose_ten_pull(results)
+
+    def _compose_ten_pull(self, results: list) -> bytes:
+        """合成十连结果图（1280x720）"""
+        # 以 3 星模板为底图
+        base = self.asset_loader.get_rarity_template(3)
+        if base is None:
+            logger.error("[AssetRenderer] 无法加载 3 星模板，使用 fallback")
+            return self.fallback.render_ten_pull(results)
+
+        base = base.copy()
+
+        # 对每个槽位合成
+        for i, result in enumerate(results):
+            rarity = result.rarity
+            name = result.name
+
+            # 加载干员肖像
+            portrait = self.asset_loader.load_portrait(name, rarity)
+            if portrait is None:
+                logger.warning(f"[AssetRenderer] 槽位 {i} 干员 '{name}' 立绘加载失败")
+                continue
+
+            # 计算槽位坐标
+            x_start = self.SLOT_START_X + i * self.SLOT_WIDTH
+            x_end = self.SLOT_END_X + i * self.SLOT_WIDTH
+
+            # 粘贴立绘到上半部分
+            base.paste(portrait, (x_start, 0, x_end, self.TOP_HEIGHT),
+                      portrait if portrait.mode == "RGBA" else None)
+
+            # 从对应稀有度模板提取底部条带并粘贴
+            rarity_template = self.asset_loader.get_rarity_template(rarity)
+            if rarity_template is not None:
+                bottom_strip = rarity_template.crop((x_start, self.BOTTOM_START, x_end, self.BOTTOM_END))
+                base.paste(bottom_strip, (x_start, self.BOTTOM_START, x_end, self.BOTTOM_END),
+                          bottom_strip if bottom_strip.mode == "RGBA" else None)
+
+        return _to_bytes(base)
