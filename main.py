@@ -29,13 +29,14 @@ class ArknightsToolboxPlugin(Star):
         # 数据目录
         self.data_dir = self._get_data_dir()
         self.db_path = os.path.join(self.data_dir, "gacha.db")
-        self.font_dir = os.path.join(os.path.dirname(__file__), "resource", "fonts")
+        self.resource_dir = os.path.join(os.path.dirname(__file__), "resource")
+        self.font_dir = os.path.join(self.resource_dir, "fonts")
 
         # 初始化抽卡组件
         source = config.get("data_source", "github")
         self.banner_manager = BannerManager(self.db_path, source)
         self.engine = GachaEngine(self.db_path, config)
-        self.gacha_renderer = GachaRenderer(self.font_dir)
+        self.gacha_renderer = GachaRenderer(self.font_dir, self.resource_dir)
 
         # 初始化素材组件
         self.loader = MaterialDataLoader(self.data_dir, source)

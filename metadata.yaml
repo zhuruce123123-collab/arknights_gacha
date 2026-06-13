@@ -2,6 +2,18 @@ name: arknights_gacha
 display_name: 明日方舟工具箱
 description: 明日方舟工具箱：抽卡模拟、素材合成查询、关卡掉落查询
 author: 皮皮朱
-version: 2.0.0
+version: 2.1.0
+description: 明日方舟工具箱 v2.1.0 - 抽卡模拟、素材合成查询、关卡掉落查询
+changelog: |
+  v2.1.0:
+  - 重构抽卡结果 UI 渲染，采用卡片式网格布局
+  - 新增稀有度渐变背景效果（6星红橙/5星金黄/4星淡紫）
+  - 新增五角星图标替代文字星级，避免字体乱码
+  - 新增干员头像加载支持（resource/avatars 目录）
+  - 新增 NEW 徽章标记新干员
+  - 新增重复次数标记
+  - 优化十连结果统计展示
+  - 优化素材合成树渲染，支持动态高度计算
+  - 优化掉落关卡列表，添加交替背景色
 repo: https://github.com/zhuruce123123-collab/arknights_gacha
 main: main.py
