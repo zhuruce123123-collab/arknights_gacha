@@ -21,7 +21,7 @@ from .renderer import GachaRenderer, MaterialRenderer, GachaAssetLoader, AssetGa
 logger = logging.getLogger(__name__)
 
 
-@register("arknights_gacha", "皮皮朱", "明日方舟工具箱", "2.1.0")
+@register("arknights_gacha", "皮皮朱", "明日方舟工具箱", "2.2.0")
 class ArknightsToolboxPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -143,6 +143,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟抽卡")
     async def on_single_pull(self, event: AstrMessageEvent):
         """单抽"""
+        event.stop_event()
         user_id = self._get_user_id(event)
         cost = self.config.get("single_pull_cost", 600)
 
@@ -175,6 +176,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟十连")
     async def on_ten_pull(self, event: AstrMessageEvent):
         """十连抽"""
+        event.stop_event()
         user_id = self._get_user_id(event)
         cost = self.config.get("ten_pull_cost", 6000)
 
@@ -206,6 +208,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟卡池")
     async def on_banner_list(self, event: AstrMessageEvent):
         """查看可用卡池"""
+        event.stop_event()
         banners = await self.banner_manager.get_active_banners()
 
         if not banners:
@@ -227,6 +230,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟切换卡池")
     async def on_switch_banner(self, event: AstrMessageEvent):
         """切换当前卡池"""
+        event.stop_event()
         user_id = self._get_user_id(event)
         banner_id_str = self._get_arg(event)
 
@@ -249,6 +253,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟背包")
     async def on_inventory(self, event: AstrMessageEvent):
         """查看背包"""
+        event.stop_event()
         user_id = self._get_user_id(event)
 
         # DRY: 使用 engine 的方法
@@ -282,6 +287,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟签到")
     async def on_sign_in(self, event: AstrMessageEvent):
         """每日签到"""
+        event.stop_event()
         user_id = self._get_user_id(event)
 
         async with self._get_db() as db:
@@ -310,6 +316,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟抽卡统计")
     async def on_statistics(self, event: AstrMessageEvent):
         """查看抽卡统计"""
+        event.stop_event()
         user_id = self._get_user_id(event)
 
         async with self._get_db() as db:
@@ -334,6 +341,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟素材")
     async def on_material(self, event: AstrMessageEvent):
         """查看素材合成路线"""
+        event.stop_event()
         name = self._get_text_arg(event)
         if not name:
             yield event.plain_result("请输入素材名称，例如: /方舟素材 聚酸酯")
@@ -368,6 +376,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟关卡")
     async def on_stage(self, event: AstrMessageEvent):
         """查看素材掉落关卡"""
+        event.stop_event()
         name = self._get_text_arg(event)
         if not name:
             yield event.plain_result("请输入素材名称，例如: /方舟关卡 聚酸酯")
@@ -404,6 +413,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟合成")
     async def on_craft(self, event: AstrMessageEvent):
         """查看完整合成成本"""
+        event.stop_event()
         name = self._get_text_arg(event)
         if not name:
             yield event.plain_result("请输入素材名称，例如: /方舟合成 酮凝集组")
@@ -437,6 +447,7 @@ class ArknightsToolboxPlugin(Star):
     @filter.command("方舟更新数据")
     async def on_update_data(self, event: AstrMessageEvent):
         """更新游戏数据（卡池 + 素材）"""
+        event.stop_event()
         yield event.plain_result("正在更新游戏数据，请稍候...")
 
         success1, msg1 = await self.banner_manager.sync_banners(force=True)
