@@ -8,6 +8,8 @@ import aiosqlite
 import aiohttp
 import logging
 
+from .constants import GITHUB_BASE, GITEE_BASE, GITHUB_PROXIES, RARITY_MAP
+
 logger = logging.getLogger(__name__)
 
 # 素材稀有度颜色
@@ -26,10 +28,6 @@ CATEGORY_MAP = {
     "NORMAL": "普通",
     "NONE": "无",
 }
-
-# GitHub raw URL base
-GITHUB_BASE = "https://raw.githubusercontent.com/Kengxxiao/ArknightsGameData/master/zh_CN/gamedata/excel/"
-GITEE_BASE = "https://gitee.com/Kengxxiao/ArknightsGameData/raw/master/zh_CN/gamedata/excel/"
 
 # 需要下载的文件
 FILES = {
@@ -80,11 +78,12 @@ class CraftingTree:
 class MaterialDataLoader:
     """素材数据加载器"""
 
-    def __init__(self, data_dir: str, source: str = "github"):
+    def __init__(self, data_dir: str, source: str = "github", config: dict = None):
         self.data_dir = data_dir
         self.db_path = os.path.join(data_dir, "material.db")
         self.images_dir = os.path.join(data_dir, "images")
         self.source = source
+        self.config = config or {}
         self.base_url = GITEE_BASE if source == "gitee" else GITHUB_BASE
         os.makedirs(self.images_dir, exist_ok=True)
 
@@ -131,21 +130,35 @@ class MaterialDataLoader:
             await db.commit()
 
     async def download_json(self, filename: str) -> dict | None:
-        """下载 JSON 文件"""
-        url = self.base_url + filename
-        logger.info(f"Downloading {url}")
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                    if resp.status == 200:
-                        text = await resp.text(encoding='utf-8')
-                        return json.loads(text)
-                    else:
-                        logger.error(f"Failed to download {filename}: HTTP {resp.status}")
-                        return None
-        except Exception as e:
-            logger.error(f"Failed to download {filename}: {e}")
-            return None
+        """
+        下载 JSON 文件 (支持镜像代理回退)
+
+        BUG-20: 添加多源回退机制，与 banner.py 保持一致
+        """
+        raw_url = self.base_url + filename
+
+        # 构建下载源列表：主 URL + GitHub 镜像代理
+        urls = [raw_url]
+        if self.source != "gitee":
+            for proxy in GITHUB_PROXIES:
+                urls.append(proxy + raw_url)
+
+        for url in urls:
+            try:
+                logger.info(f"Downloading {filename} from {url}")
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                        if resp.status == 200:
+                            text = await resp.text(encoding='utf-8')
+                            return json.loads(text)
+                        else:
+                            logger.warning(f"Failed to download {filename}: HTTP {resp.status} from {url}")
+            except Exception as e:
+                logger.warning(f"Failed to download {filename} from {url}: {e}")
+                continue
+
+        logger.error(f"All download sources failed for {filename}")
+        return None
 
     async def get_last_update(self, filename: str) -> int:
         """获取上次更新时间"""
@@ -169,11 +182,15 @@ class MaterialDataLoader:
     async def update_all(self, force: bool = False) -> tuple[bool, str]:
         """更新所有数据"""
         results = []
+        any_success = False
+
+        # BUG-17: 使用配置项 auto_update_days
+        update_interval = self.config.get("auto_update_days", 7) * 86400
 
         for filename, desc in FILES.items():
             # 检查是否需要更新
             last_update = await self.get_last_update(filename)
-            if not force and last_update > 0 and (time.time() - last_update) < 7 * 86400:
+            if not force and last_update > 0 and (time.time() - last_update) < update_interval:
                 results.append(f"{desc}: 已是最新")
                 continue
 
@@ -193,12 +210,14 @@ class MaterialDataLoader:
 
                 await self.set_last_update(filename, "success")
                 results.append(f"{desc}: 更新成功")
+                any_success = True
             except Exception as e:
                 logger.error(f"Failed to load {filename}: {e}")
                 results.append(f"{desc}: 入库失败 - {e}")
                 await self.set_last_update(filename, "error")
 
-        return True, "\n".join(results)
+        # BUG-21: 根据实际结果返回状态
+        return any_success, "\n".join(results)
 
     async def load_item_table(self, data: dict):
         """加载物品数据"""
@@ -210,8 +229,7 @@ class MaterialDataLoader:
 
                 name = item.get("name", "")
                 rarity_str = item.get("rarity", "TIER_1")
-                rarity_map = {"TIER_1": 1, "TIER_2": 2, "TIER_3": 3, "TIER_4": 4, "TIER_5": 5, "TIER_6": 6}
-                rarity = rarity_map.get(rarity_str, 1)
+                rarity = RARITY_MAP.get(rarity_str, 1)
                 category = item.get("sortId", "")
                 description = item.get("description", "")
 

@@ -12,6 +12,12 @@ import sys
 import urllib.request
 import ssl
 
+# 支持直接运行和作为模块导入
+try:
+    from .constants import RARITY_MAP
+except ImportError:
+    from constants import RARITY_MAP
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RESOURCE_DIR = os.path.join(SCRIPT_DIR, "resource")
 OUTPUT_FILE = os.path.join(RESOURCE_DIR, "operators.json")
@@ -28,11 +34,6 @@ SOURCES = [
     # Gitee
     "https://gitee.com/Kengxxiao/ArknightsGameData/raw/master/zh_CN/gamedata/excel/character_table.json",
 ]
-
-RARITY_MAP = {
-    "TIER_1": 1, "TIER_2": 2, "TIER_3": 3,
-    "TIER_4": 4, "TIER_5": 5, "TIER_6": 6,
-}
 
 
 def download_json(url: str, timeout: int = 120) -> dict | None:
@@ -68,7 +69,10 @@ def extract_operators(data: dict) -> dict:
 
         # 只保留 3-6 星干员
         if rarity >= 3:
-            operators[char_id] = {"name": name, "rarity": rarity}
+            obtain_approach = char.get("itemObtainApproach", "")
+            is_not_obtainable = char.get("isNotObtainable", False)
+            is_limited = 1 if (obtain_approach != "招募寻访" or is_not_obtainable) else 0
+            operators[char_id] = {"name": name, "rarity": rarity, "is_limited": is_limited}
 
     return operators
 

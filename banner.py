@@ -9,18 +9,9 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from .constants import GITHUB_BASE, GITEE_BASE, GITHUB_PROXIES, RARITY_MAP
+
 logger = logging.getLogger(__name__)
-
-# GitHub raw URL base
-GITHUB_BASE = "https://raw.githubusercontent.com/Kengxxiao/ArknightsGameData/master/zh_CN/gamedata/excel/"
-GITEE_BASE = "https://gitee.com/Kengxxiao/ArknightsGameData/raw/master/zh_CN/gamedata/excel/"
-
-# GitHub 镜像代理（用于国内环境下载字体等文件）
-GITHUB_PROXIES = [
-    "https://edgeone.gh-proxy.com/",
-    "https://ghfast.top/",
-    "https://gh-proxy.com/",
-]
 
 # 卡池类型映射
 POOL_TYPE_MAP = {
@@ -156,6 +147,9 @@ class BannerManager:
                 if force:
                     await db.execute("UPDATE banners SET is_active = 0")
 
+                # BUG-4: 获取已知干员列表，用于 UP 干员名称匹配
+                known_operators = await self._get_known_operators(db)
+
                 # 添加新卡池
                 added_count = 0
                 for pool in pools:
@@ -179,11 +173,11 @@ class BannerManager:
                     # 解析卡池类型
                     pool_type = POOL_TYPE_MAP.get(gacha_rule_type, 0)
 
-                    # 解析 UP 干员 (从 gachaPoolDetail 中提取)
+                    # BUG-4: 解析 UP 干员 (从 gachaPoolDetail 中名称匹配)
                     detail = pool.get("gachaPoolDetail", "")
-                    pickup_6 = self._extract_pickup(detail, 6)
-                    pickup_5 = self._extract_pickup(detail, 5)
-                    pickup_4 = self._extract_pickup(detail, 4)
+                    pickup_6 = self._extract_pickup(detail, 6, known_operators)
+                    pickup_5 = self._extract_pickup(detail, 5, known_operators)
+                    pickup_4 = self._extract_pickup(detail, 4, known_operators)
 
                     # 存储卡池
                     data_json = json.dumps(pool, ensure_ascii=False)
@@ -204,21 +198,42 @@ class BannerManager:
             logger.error(f"Failed to sync banners: {e}")
             return False, f"同步失败: {e}"
 
-    def _extract_pickup(self, detail: str, rarity: int) -> str:
+    async def _get_known_operators(self, db) -> list:
+        """获取已知干员列表 (用于 UP 匹配)"""
+        async with db.execute(
+            "SELECT char_id, name, rarity FROM operator_pool"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [{"char_id": r[0], "name": r[1], "rarity": r[2]} for r in rows]
+
+    def _extract_pickup(self, detail: str, rarity: int, known_operators: list = None) -> str:
         """
         从卡池详情中提取 UP 干员
+
+        BUG-4: 实现名称匹配逻辑，从 gachaPoolDetail 文本中查找干员名
 
         Args:
             detail: 卡池详情文本
             rarity: 稀有度 (4/5/6)
+            known_operators: 已知干员列表
 
         Returns:
             JSON array of char_ids
         """
-        # 简化处理: 从详情文本中提取干员名称
-        # 实际应该从 gacha_table 的结构化数据中提取
-        # 这里返回空数组，后续需要完善
-        return "[]"
+        if not detail or not known_operators:
+            return "[]"
+
+        # 筛选指定稀有度的干员
+        candidates = [op for op in known_operators if op["rarity"] == rarity]
+
+        # 在详情文本中查找干员名称
+        pickup_ids = []
+        for op in candidates:
+            name = op.get("name", "")
+            if name and name in detail:
+                pickup_ids.append(op["char_id"])
+
+        return json.dumps(pickup_ids, ensure_ascii=False)
 
     async def get_active_banners(self) -> list[dict]:
         """获取当前活跃卡池"""
@@ -271,15 +286,22 @@ class BannerManager:
             for char_id, char in character_data.items():
                 if not char_id.startswith("char_"):
                     continue
+                # BUG-16: 与 load_operators_from_local 保持一致的过滤逻辑
+                if "#" in char_id:
+                    continue
 
                 name = char.get("name", "")
                 rarity_str = char.get("rarity", "TIER_1")
-                rarity_map = {"TIER_1": 1, "TIER_2": 2, "TIER_3": 3,
-                             "TIER_4": 4, "TIER_5": 5, "TIER_6": 6}
-                rarity = rarity_map.get(rarity_str, 1)
+                rarity = RARITY_MAP.get(rarity_str, 1)
 
-                # 判断是否限定
-                is_limited = 0
+                # BUG-16: 只加载 3 星及以上干员
+                if rarity < 3:
+                    continue
+
+                # BUG-5: 从 itemObtainApproach 判断是否限定
+                obtain_approach = char.get("itemObtainApproach", "")
+                is_not_obtainable = char.get("isNotObtainable", False)
+                is_limited = 1 if (obtain_approach != "招募寻访" or is_not_obtainable) else 0
                 is_classic = 0
 
                 await db.execute("""
@@ -327,11 +349,13 @@ class BannerManager:
                     if char_id.startswith("char_") and "#" not in char_id:
                         name = char.get("name", "")
                         rarity_str = char.get("rarity", "TIER_1")
-                        rarity_map = {"TIER_1": 1, "TIER_2": 2, "TIER_3": 3,
-                                     "TIER_4": 4, "TIER_5": 5, "TIER_6": 6}
-                        rarity = rarity_map.get(rarity_str, 1)
+                        rarity = RARITY_MAP.get(rarity_str, 1)
                         if rarity >= 3:
-                            data[char_id] = {"name": name, "rarity": rarity}
+                            # BUG-5: 从 itemObtainApproach 判断是否限定
+                            obtain_approach = char.get("itemObtainApproach", "")
+                            is_not_obtainable = char.get("isNotObtainable", False)
+                            is_limited = 1 if (obtain_approach != "招募寻访" or is_not_obtainable) else 0
+                            data[char_id] = {"name": name, "rarity": rarity, "is_limited": is_limited}
                 source_name = "character_table.json"
             except Exception as e:
                 logger.warning(f"Failed to load character_table.json: {e}")

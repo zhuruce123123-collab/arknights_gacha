@@ -1,9 +1,17 @@
 name: arknights_gacha
 display_name: 明日方舟工具箱
-description: 明日方舟工具箱 v2.3.0 - 抽卡模拟、素材合成查询、关卡掉落查询
+description: 明日方舟工具箱 v2.4.0 - 抽卡模拟、素材合成查询、关卡掉落查询
 author: 皮皮朱
-version: 2.3.0
+version: 2.4.0
 changelog: |
+  v2.4.0:
+  - 修复 MaterialDataLoader 缺少 config 参数导致插件加载失败
+  - 统一常量到 constants.py，消除重复代码
+  - 新增素材下载镜像代理回退机制
+  - 新增 UP 干员名称匹配和限定干员识别
+  - 抽卡引擎重构：RNG 与 DB 操作分离，支持扣费参数
+  - SQL 列名白名单防止注入
+  - 素材更新间隔可配置 (auto_update_days)
   v2.3.0:
   - 所有命令添加 event.stop_event()，阻止 LLM 在插件命令后继续回复
   v2.2.0:
@@ -13,12 +21,8 @@ changelog: |
   - 素材缺失时自动 fallback 到程序化卡片渲染
   - 修复十连保底数据不一致问题（单事务重写 pull_ten）
   - 修复扣费与抽卡非原子操作问题
-  - 实现 UP 干员名称匹配机制
-  - 修复限定干员识别（基于 itemObtainApproach）
   - 修复临时文件泄漏（上下文管理器）
-  - 修复素材下载镜像代理回退
   - 修复多个防御性编程问题（除零、bare except、字段名错误）
-  - 统一代码常量，消除重复代码
   v2.1.0:
   - 重构抽卡结果 UI 渲染，采用卡片式网格布局
   - 新增稀有度渐变背景效果（6星红橙/5星金黄/4星淡紫）

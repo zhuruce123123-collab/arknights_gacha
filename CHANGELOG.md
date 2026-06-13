@@ -1,5 +1,16 @@
 # 更新日志
 
+## [2.4.0] - 2026-06-13
+
+### 修复
+- 修复 MaterialDataLoader 缺少 config 参数导致插件加载失败
+- 统一常量到 constants.py，消除 banner.py / crafting.py / bootstrap_data.py 中的重复定义
+- 新增素材下载镜像代理回退机制（edgeone / ghfast / gh-proxy）
+- 新增 UP 干员名称匹配和限定干员识别（基于 itemObtainApproach）
+- 抽卡引擎重构：RNG 与 DB 操作分离，支持 cost 扣费参数
+- SQL 列名白名单防止注入
+- 素材更新间隔可配置（auto_update_days）
+
 ## [2.3.0] - 2026-06-13
 
 ### 修复
