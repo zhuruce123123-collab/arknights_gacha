@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 @register("arknights_gacha", "皮皮朱", "明日方舟工具箱", "2.4.0")
 class ArknightsToolboxPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
+    def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
-        self.config = config
+        self.config = config or {}
 
         # 数据目录
         self.data_dir = self._get_data_dir()
