@@ -21,7 +21,7 @@ from .renderer import GachaRenderer, MaterialRenderer, GachaAssetLoader, AssetGa
 logger = logging.getLogger(__name__)
 
 
-@register("arknights_gacha", "皮皮朱", "明日方舟工具箱", "2.2.0")
+@register("arknights_gacha", "皮皮朱", "明日方舟工具箱", "2.3.0")
 class ArknightsToolboxPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
